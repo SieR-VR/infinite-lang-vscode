@@ -1,0 +1,38 @@
+{
+  "name": "infinite-lang-vscode",
+  "displayName": "infinite-lang-vscode",
+  "description": "vscode extension for infinite-lang",
+  "version": "0.0.1",
+  "license": "MIT",
+  "dependencies": {
+    "infinite-lang": "^0.0.1",
+    "vscode-languageclient": "^8.1.0",
+    "vscode-languageserver": "^8.1.0",
+    "vscode-languageserver-textdocument": "^1.0.8"
+  },
+  "engines": {
+    "vscode": "^1.77.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "infinite",
+        "aliases": [
+          "Infinite",
+          "infinite"
+        ],
+        "extensions": [
+          ".inf"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^18.15.11",
+    "@types/vscode": "^1.77.0"
+  }
+}
