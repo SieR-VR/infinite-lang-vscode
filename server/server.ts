@@ -14,6 +14,13 @@ import {
     TextDocumentPositionParams,
     TextDocumentSyncKind,
     InitializeResult,
+    SemanticTokens,
+    DocumentHighlight,
+    DocumentSymbol,
+    DocumentSymbolRequest,
+    SymbolInformation,
+    DocumentSymbolParams,
+    SemanticTokensBuilder,
 } from 'vscode-languageserver/node';
 
 import {
@@ -28,7 +35,8 @@ import { TokenizeRuleModule } from 'infinite-lang/rule/tokenizer';
 import { Node, parse } from "infinite-lang/core/parser";
 import { ParseRuleModule } from 'infinite-lang/rule/parser';
 
-import { getModules } from './util';
+import { getModules, getSymbolKind } from './util';
+import { constants } from 'buffer';
 
 const connection = createConnection(ProposedFeatures.all);
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
@@ -83,13 +91,116 @@ connection.onDidChangeWatchedFiles(handler => {
             tokenizerModules = getModules<TokenizeRuleModule>(configPath, infconfig.token ? [infconfig.token] : [])
                 .flat();
             parserModules = getModules<ParseRuleModule<any, Node, string>>(configPath, infconfig.parser);
-
-            console.log(parserModules)
         }
         else {
             console.warn(`Unknown file changed: ${change.uri}`);
         }
     });
+});
+
+connection.onRequest(DocumentSymbolRequest.type, handler => {
+    const symbols: SymbolInformation[] = [];
+    const document = documents.get(handler.textDocument.uri);
+
+    if (!document) {
+        console.warn(`Document not found: ${handler.textDocument.uri}`);
+    }
+
+    const tokens = tokenize({
+        fileName: handler.textDocument.uri,
+        input: document.getText(),
+    }, tokenizerModules);
+
+    symbols.push(...tokens.unwrap()
+        .filter(token => token.highlight)
+        .map(token => ({
+            kind: getSymbolKind(token.highlight),
+            location: {
+                range: {
+                    start: document.positionAt(token.startPos),
+                    end: document.positionAt(token.endPos),
+                },
+                uri: handler.textDocument.uri,
+            },
+            name: token.tokenType,
+        } as SymbolInformation)));
+
+    console.log(symbols);
+
+    return symbols;
+});
+
+connection.onRequest("textDocument/semanticTokens", (handler: DocumentSymbolParams): SemanticTokens => {
+    const document = documents.get(handler.textDocument.uri);
+    
+    const semanticTokensMap: Map<string, {
+        line: number;
+        character: number;
+        kind: number;
+    }> = new Map();
+    const builder = new SemanticTokensBuilder();
+
+    if (!document) {
+        console.warn(`Document not found: ${handler.textDocument.uri}`);
+    }
+
+    console.log(document.getText());
+
+    const tokens = tokenize({
+        fileName: handler.textDocument.uri,
+        input: document.getText(),
+    }, tokenizerModules);
+
+    tokens.unwrap()
+        .filter(token => token.highlight)
+        .forEach(token => {
+            const startPos = document.positionAt(token.startPos);
+
+            semanticTokensMap.set(JSON.stringify([token.startPos, token.endPos]), {
+                line: startPos.line,
+                character: startPos.character,
+                kind: getSymbolKind(token.highlight),
+            });
+        });
+
+    const ast = parse({
+        fileName: handler.textDocument.uri,
+        tokens: tokens.unwrap(),
+    }, parserModules, () => {});
+
+    function travel(node: Node | Node[]) {
+        if (Array.isArray(node)) {
+            node.forEach(travel);
+
+            return;
+        }
+
+        if (node.semanticHighlight) {
+            const startPos = document.positionAt(node.startPos);
+
+            semanticTokensMap.set(JSON.stringify([node.startPos, node.endPos]), {
+                line: startPos.line,
+                character: startPos.character,
+                kind: getSymbolKind(node.semanticHighlight),
+            });
+
+            console.log(semanticTokensMap.get(JSON.stringify([node.startPos, node.endPos])));
+        }
+
+        if (node.children) {
+            node.children.forEach(travel);
+        }
+    }
+
+    ast.is_ok() && travel(ast.unwrap());
+
+    semanticTokensMap.forEach((value, key) => {
+        const [startPos, endPos] = JSON.parse(key) as [number, number];
+        builder.push(value.line, value.character, endPos - startPos, value.kind, 0);
+    });
+    const result = builder.build();
+
+    return result;
 })
 
 documents.onDidChangeContent(change => {

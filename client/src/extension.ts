@@ -1,5 +1,5 @@
 import * as path from "path";
-import { workspace, ExtensionContext } from "vscode";
+import { workspace, ExtensionContext, languages } from "vscode";
 
 import {
     LanguageClient,
@@ -7,6 +7,8 @@ import {
     ServerOptions,
     TransportKind,
 } from "vscode-languageclient/node";
+
+import { makeProvider, legend } from "./semanticTokenProvider";
 
 let client: LanguageClient;
 
@@ -40,6 +42,12 @@ export function activate(context: ExtensionContext) {
     );
 
     client.start();
+
+    languages.registerDocumentSemanticTokensProvider(
+        { scheme: "file", language: "infinite" },
+        makeProvider(client),
+        legend
+    );
 }
 
 export function deactivate(): Thenable<void> | undefined {
