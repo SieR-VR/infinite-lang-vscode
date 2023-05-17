@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 
 import {
@@ -12,29 +13,38 @@ import {
     CompletionItemKind,
     TextDocumentPositionParams,
     TextDocumentSyncKind,
-    InitializeResult
+    InitializeResult,
 } from 'vscode-languageserver/node';
 
 import {
     TextDocument
 } from 'vscode-languageserver-textdocument';
 
-import { tokenize, TokenizerOptions } from "infinite-lang/core/tokenizer";
-import { parse, ParserOptions } from "infinite-lang/core/parser";
+import { URI } from 'vscode-uri';
+
+import { tokenize } from "infinite-lang/core/tokenizer";
+import { TokenizeRuleModule } from 'infinite-lang/rule/tokenizer';
+
+import { Node, parse } from "infinite-lang/core/parser";
+import { ParseRuleModule } from 'infinite-lang/rule/parser';
+
+import { getModules } from './util';
 
 const connection = createConnection(ProposedFeatures.all);
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 
 interface InfiniteConfig {
-    modules: string[];
+    token?: string;
+    parser: string[];
 }
 
 let infconfig: InfiniteConfig = {
-    modules: []
+    token: undefined,
+    parser: []
 };
 
-let tokenizerOptions: TokenizerOptions = { modules: [] };
-let parserOptions: ParserOptions = { modules: [] };
+let tokenizerModules: TokenizeRuleModule[] = [];
+let parserModules: ParseRuleModule<any, Node, string>[] = [];
 
 connection.onInitialize((params: InitializeParams) => {
     const capabilities = params.capabilities;
@@ -57,14 +67,27 @@ connection.onInitialized(() => {
 
 connection.onDidChangeWatchedFiles(handler => {
     handler.changes.forEach(async change => {
-        const configDocument = change.uri.endsWith("infconfig.json") && documents.get(change.uri);
+        console.log(`File changed: ${change.uri}`);
+
+        const configDocument = change.uri.endsWith("infconfig.json") 
+            && URI.parse(change.uri).scheme === "file" 
+                ? fs.readFileSync(URI.parse(change.uri).fsPath, { encoding: "utf-8" }) 
+                : undefined;
+
         if (configDocument) {
-            const configPath = path.dirname(configDocument.uri);
-            infconfig = JSON.parse(configDocument.getText());
+            console.log(URI.parse(change.uri).fsPath)
+
+            const configPath = path.dirname(URI.parse(change.uri).fsPath);
+            infconfig = JSON.parse(configDocument);
             
-            const modules = await Promise.all(infconfig.modules.map(async module => {
-                return await import(path.join(configPath, module));
-            }));
+            tokenizerModules = getModules<TokenizeRuleModule>(configPath, infconfig.token ? [infconfig.token] : [])
+                .flat();
+            parserModules = getModules<ParseRuleModule<any, Node, string>>(configPath, infconfig.parser);
+
+            console.log(parserModules)
+        }
+        else {
+            console.warn(`Unknown file changed: ${change.uri}`);
         }
     });
 })
@@ -77,28 +100,51 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
     const text = textDocument.getText();
     const diagnostics: Diagnostic[] = [];
 
-    try {
-        const tokens = tokenize({
-            fileName: textDocument.uri,
-            input: text
-        }, tokenizerOptions);
+    console.log(`start validating ${textDocument.uri} with \n\t${tokenizerModules.length} tokenizer modules and\n\t${parserModules.length} parser modules`);
 
-        const ast = parse({
-            fileName: textDocument.uri,
-            tokens
-        }, parserOptions);
-    }
-    catch (error) {
-        const diagnostic: Diagnostic = {
+    const tokens = tokenize({
+        fileName: textDocument.uri,
+        input: text
+    }, tokenizerModules);
+
+    if (tokens.is_err()) {
+        const errors = tokens.unwrap_err();
+
+        diagnostics.push(...errors.map(error => ({
             severity: DiagnosticSeverity.Error,
             range: {
-                start: textDocument.positionAt(error.start),
-                end: textDocument.positionAt(error.end)
+                start: textDocument.positionAt(error.startPos),
+                end: textDocument.positionAt(error.endPos)
             },
-            message: error.message,
-            source: 'infinite'
-        };
-        diagnostics.push(diagnostic);
+            message: "Unknown token: " + textDocument.getText({
+                start: textDocument.positionAt(error.startPos),
+                end: textDocument.positionAt(error.endPos)
+            }),
+        })));
+
+        connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
+        return;
+    }
+
+    const ast = parse({
+        fileName: textDocument.uri,
+        tokens: tokens.unwrap(),
+    }, parserModules, () => {});
+
+    if (ast.is_err()) {
+        const errors = ast.unwrap_err();
+
+        diagnostics.push(...errors.map(error => ({
+            severity: DiagnosticSeverity.Error,
+            range: {
+                start: textDocument.positionAt(error.startPos),
+                end: textDocument.positionAt(error.endPos)
+            },
+            message: `Expected ${error.expected}, but found ${error.actual}:\n\tTried:\n${error.tried?.map(t => `\t\t${t}`).join("\n")}`,
+        })));
+
+        connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
+        return;
     }
 
     connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });

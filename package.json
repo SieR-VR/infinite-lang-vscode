@@ -5,10 +5,12 @@
   "version": "0.0.1",
   "license": "MIT",
   "dependencies": {
-    "infinite-lang": "^0.0.1",
+    "glob": "^10.2.4",
+    "infinite-lang": "*",
     "vscode-languageclient": "^8.1.0",
     "vscode-languageserver": "^8.1.0",
-    "vscode-languageserver-textdocument": "^1.0.8"
+    "vscode-languageserver-textdocument": "^1.0.8",
+    "vscode-uri": "^3.0.7"
   },
   "engines": {
     "vscode": "^1.77.0"
@@ -16,6 +18,7 @@
   "categories": [
     "Programming Languages"
   ],
+  "main": "out/client/src/extension.js",
   "contributes": {
     "languages": [
       {

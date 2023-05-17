@@ -12,8 +12,10 @@ let client: LanguageClient;
 
 export function activate(context: ExtensionContext) {
     const serverModule = context.asAbsolutePath(
-        path.join("server", "out", "server.js")
+        path.join("out", "server", "server.js")
     );
+
+    console.log(serverModule);
 
     const serverOptions: ServerOptions = {
         run: { module: serverModule, transport: TransportKind.ipc },
