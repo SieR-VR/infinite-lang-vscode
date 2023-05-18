@@ -118,10 +118,9 @@ glob@^10.2.4:
     minipass "^5.0.0 || ^6.0.0"
     path-scurry "^1.7.0"
 
-infinite-lang@*:
+"infinite-lang@https://github.com/SieR-VR/infinite.git#master":
   version "0.0.12"
-  resolved "https://registry.yarnpkg.com/infinite-lang/-/infinite-lang-0.0.12.tgz#2fd2ab8b4c4c2ac00c3fefcb7d00a2bbf931b932"
-  integrity sha512-r+QgFwwutCMjNtutVwrQVnhdTZRp87qW5RNdjBDgvEMFqf7swAeM4S5XI9Mk9tdnZyJ2q59Ab2K5YdjrXASvnw==
+  resolved "https://github.com/SieR-VR/infinite.git#cffa87989c2d6d44061ba85bbfc8e6e97f41689b"
   dependencies:
     ts-features "^1.3.4"
 
