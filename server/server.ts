@@ -35,27 +35,37 @@ import { TokenizeRuleModule } from 'infinite-lang/rule/tokenizer';
 import { Node, parse } from "infinite-lang/core/parser";
 import { ParseRuleModule } from 'infinite-lang/rule/parser';
 
-import { getModules, getSymbolKind } from './util';
-import { constants } from 'buffer';
+import { getModules, getSymbolKind, getInfconfigFromPath, infconfigApplyGlob } from './util';
+import { ModulePathManager } from './ModulePathManager';
+import { InfiniteConfig } from './InfiniteConfig';
 
 const connection = createConnection(ProposedFeatures.all);
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 
-interface InfiniteConfig {
-    token?: string;
-    parser: string[];
-}
-
-let infconfig: InfiniteConfig = {
-    token: undefined,
-    parser: []
-};
-
-let tokenizerModules: TokenizeRuleModule[] = [];
-let parserModules: ParseRuleModule<any, Node, string>[] = [];
+const InfiniteConfigManager = new ModulePathManager<InfiniteConfig>();
+const TokenizerModuleManager = new ModulePathManager<TokenizeRuleModule[]>();
+const ParserModuleManager = new ModulePathManager<ParseRuleModule<any, Node, string>>();
 
 connection.onInitialize((params: InitializeParams) => {
     const capabilities = params.capabilities;
+
+    console.log(params.workspaceFolders);
+    
+    params.workspaceFolders && params.workspaceFolders.forEach(folder => {
+        const configs = getInfconfigFromPath(URI.parse(folder.uri).fsPath);
+        configs.forEach(({ prefix, config }) => {
+            InfiniteConfigManager.set(prefix, config);
+            console.log(config);
+
+            getModules<TokenizeRuleModule[]>(prefix, config.token ? config.token : []).map(module => {
+                TokenizerModuleManager.set(module.file, module.module);
+            });
+            
+            getModules<ParseRuleModule<any, Node, string>>(prefix, config.parser).map(module => {
+                ParserModuleManager.set(module.file, module.module);
+            });
+        });
+    });
 
     const result: InitializeResult = {
         capabilities: {
@@ -83,14 +93,18 @@ connection.onDidChangeWatchedFiles(handler => {
                 : undefined;
 
         if (configDocument) {
-            console.log(URI.parse(change.uri).fsPath)
-
             const configPath = path.dirname(URI.parse(change.uri).fsPath);
-            infconfig = JSON.parse(configDocument);
+            const config = JSON.parse(configDocument) as InfiniteConfig;
+
+            InfiniteConfigManager.set(configPath, JSON.parse(configDocument));
+
+            getModules<TokenizeRuleModule[]>(configPath, config.token ? config.token : []).map(module => {
+                TokenizerModuleManager.set(module.file, module.module);
+            });
             
-            tokenizerModules = getModules<TokenizeRuleModule>(configPath, infconfig.token ? [infconfig.token] : [])
-                .flat();
-            parserModules = getModules<ParseRuleModule<any, Node, string>>(configPath, infconfig.parser);
+            getModules<ParseRuleModule<any, Node, string>>(configPath, config.parser).map(module => {
+                ParserModuleManager.set(module.file, module.module);
+            });
         }
         else {
             console.warn(`Unknown file changed: ${change.uri}`);
@@ -98,58 +112,47 @@ connection.onDidChangeWatchedFiles(handler => {
     });
 });
 
-connection.onRequest(DocumentSymbolRequest.type, handler => {
-    const symbols: SymbolInformation[] = [];
-    const document = documents.get(handler.textDocument.uri);
-
-    if (!document) {
-        console.warn(`Document not found: ${handler.textDocument.uri}`);
-    }
-
-    const tokens = tokenize({
-        fileName: handler.textDocument.uri,
-        input: document.getText(),
-    }, tokenizerModules);
-
-    symbols.push(...tokens.unwrap()
-        .filter(token => token.highlight)
-        .map(token => ({
-            kind: getSymbolKind(token.highlight),
-            location: {
-                range: {
-                    start: document.positionAt(token.startPos),
-                    end: document.positionAt(token.endPos),
-                },
-                uri: handler.textDocument.uri,
-            },
-            name: token.tokenType,
-        } as SymbolInformation)));
-
-    console.log(symbols);
-
-    return symbols;
-});
-
 connection.onRequest("textDocument/semanticTokens", (handler: DocumentSymbolParams): SemanticTokens => {
-    const document = documents.get(handler.textDocument.uri);
-    
     const semanticTokensMap: Map<string, {
         line: number;
         character: number;
         kind: number;
     }> = new Map();
-    const builder = new SemanticTokensBuilder();
+    const document = documents.get(handler.textDocument.uri);
 
     if (!document) {
         console.warn(`Document not found: ${handler.textDocument.uri}`);
+        return;
     }
 
-    console.log(document.getText());
+    const directory = path.dirname(URI.parse(handler.textDocument.uri).fsPath);
+    const config = InfiniteConfigManager.search(directory);
 
+    if (!config) {
+        console.warn(`Config not found: ${directory}`);
+        return;
+    }
+
+    config.module = infconfigApplyGlob(config.path, config.module);
+
+    const tokenizerModules = config.module.token
+        .flatMap(module => TokenizerModuleManager.get(path.join(config.path, module)))
+        .filter(module => module);
+    const parserModules = config.module.parser
+        .map(module => ParserModuleManager.get(path.join(config.path, module)))
+        .filter(module => module);
+
+    console.log(`start tokenizing ${handler.textDocument.uri} with \n\t${tokenizerModules.length} tokenizer modules and\n\t${parserModules.length} parser modules`);
+    
     const tokens = tokenize({
         fileName: handler.textDocument.uri,
         input: document.getText(),
     }, tokenizerModules);
+
+    if (tokens.is_err()) {
+        console.warn(`Tokenize failed: ${tokens.unwrap_err()}`);
+        return;
+    }
 
     tokens.unwrap()
         .filter(token => token.highlight)
@@ -167,6 +170,11 @@ connection.onRequest("textDocument/semanticTokens", (handler: DocumentSymbolPara
         fileName: handler.textDocument.uri,
         tokens: tokens.unwrap(),
     }, parserModules, () => {});
+
+    if (ast.is_err()) {
+        console.warn(`Parse failed: ${ast.unwrap_err()}`);
+        return;
+    }
 
     function travel(node: Node | Node[]) {
         if (Array.isArray(node)) {
@@ -191,9 +199,9 @@ connection.onRequest("textDocument/semanticTokens", (handler: DocumentSymbolPara
             node.children.forEach(travel);
         }
     }
+    travel(ast.unwrap());
 
-    ast.is_ok() && travel(ast.unwrap());
-
+    const builder = new SemanticTokensBuilder();
     semanticTokensMap.forEach((value, key) => {
         const [startPos, endPos] = JSON.parse(key) as [number, number];
         builder.push(value.line, value.character, endPos - startPos, value.kind, 0);
@@ -210,6 +218,23 @@ documents.onDidChangeContent(change => {
 async function validateTextDocument(textDocument: TextDocument): Promise<void> {
     const text = textDocument.getText();
     const diagnostics: Diagnostic[] = [];
+
+    const directory = path.dirname(URI.parse(textDocument.uri).fsPath);
+    const config = InfiniteConfigManager.search(directory);
+
+    if (!config) {
+        console.warn(`Config not found: ${directory}`);
+        return;
+    }
+
+    config.module = infconfigApplyGlob(config.path, config.module);
+
+    const tokenizerModules = config.module.token
+        .flatMap(module => TokenizerModuleManager.get(path.join(config.path, module)))
+        .filter(module => module);
+    const parserModules = config.module.parser
+        .map(module => ParserModuleManager.get(path.join(config.path, module)))
+        .filter(module => module);
 
     console.log(`start validating ${textDocument.uri} with \n\t${tokenizerModules.length} tokenizer modules and\n\t${parserModules.length} parser modules`);
 

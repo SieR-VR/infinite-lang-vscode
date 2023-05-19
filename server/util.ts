@@ -1,22 +1,63 @@
+import * as fs from "fs";
 import * as path from "path";
 import { glob } from "glob";
 
 import { SymbolKind } from "vscode-languageserver/node";
-import type { HighlightTokenTypes } from "infinite-lang/rule/tokenizer";
+import type { HighlightTokenType } from "infinite-lang/rule/tokenizer";
 
-export function getModules<T = any>(baseUrl: string, files: string[]): T[] {
-    const modules = glob.sync(files, {
+import type { InfiniteConfig } from "./InfiniteConfig";
+
+export function getModules<T = any>(baseUrl: string, files: string[]): { file: string, module: T }[] {
+    const globbedFiles = glob.sync(files, {
         cwd: baseUrl,
         ignore: [
             "node_modules/**",
         ]
     }).flat();
-
-    return modules.map(module => require(path.join(baseUrl, module)).default)
-        .filter(module => module);
+    
+    return globbedFiles.map(file => ({ 
+        file: path.join(baseUrl, file), 
+        module: require(path.join(baseUrl, file)).default as T 
+    })).filter(module => module.module);
 }
 
-export function getSymbolKind(s: HighlightTokenTypes): SymbolKind {
+export function getInfconfigFromPath(filePath: string): { prefix: string, config: InfiniteConfig }[] {
+    const configPaths = glob.sync("./**/infconfig.json", {
+        cwd: filePath,
+        ignore: [
+            "node_modules/**",
+        ]
+    }).flat();
+
+    return configPaths.map(configPath => {
+        const config = fs.readFileSync(path.join(filePath, configPath), 'utf8');
+        const prefix = path.dirname(path.join(filePath, configPath));
+        return {
+            prefix,
+            config: JSON.parse(config)
+        };
+    }).filter(config => config);
+}
+
+export function infconfigApplyGlob(prefix: string, config: InfiniteConfig): InfiniteConfig {
+    return {
+        ...config,
+        token: config.token ? glob.sync(config.token, {
+            cwd: prefix,
+            ignore: [
+                "node_modules/**",
+            ]
+        }).flat() : undefined,
+        parser: config.parser ? glob.sync(config.parser, {
+            cwd: prefix,
+            ignore: [
+                "node_modules/**",
+            ]
+        }).flat() : undefined
+    };
+}
+
+export function getSymbolKind(s: HighlightTokenType): SymbolKind {
     switch(s) {
         case "string":
             return SymbolKind.String;

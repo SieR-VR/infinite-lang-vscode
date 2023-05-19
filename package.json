@@ -6,7 +6,7 @@
   "license": "MIT",
   "dependencies": {
     "glob": "^10.2.4",
-    "infinite-lang": "https://github.com/SieR-VR/infinite.git#master",
+    "infinite-lang": "0.0.15-1f8db3d6f851c09767364ad13a3366f5e72e8093.0",
     "vscode-languageclient": "^8.1.0",
     "vscode-languageserver": "^8.1.0",
     "vscode-languageserver-textdocument": "^1.0.8",
